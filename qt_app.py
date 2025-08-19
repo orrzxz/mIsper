@@ -495,12 +495,12 @@ class TranscribeWorker:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("WhisperMac – MLX Whisper Video Transcriber")
+        self.setWindowTitle("mIsper – MLX Whisper Video Transcriber")
         self.resize(1100, 720)
 
         self.selected_files: List[str] = []
         self.output_dir: str = ""
-        self.temp_dir: str = tempfile.mkdtemp(prefix="whispermac_")
+        self.temp_dir: str = tempfile.mkdtemp(prefix="misper_")
         self.log_q: "queue.Queue[str]" = queue.Queue()
         self.worker_thread: threading.Thread | None = None
         self.worker: TranscribeWorker | None = None
