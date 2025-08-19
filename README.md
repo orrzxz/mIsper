@@ -1,4 +1,4 @@
-# WhisperMac – MLX Whisper Video Transcriber (macOS)
+# mIsper – MLX Whisper Video Transcriber (macOS)
 
 A modern Python GUI app for macOS (Qt/PySide6) that transcribes video/audio files using OpenAI Whisper running natively on Apple Silicon via MLX (GPU-accelerated). Supports model selection (tiny/base/small/medium/large-v3/turbo/distil) and outputs .txt or .srt.
 
