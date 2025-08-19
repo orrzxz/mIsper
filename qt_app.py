@@ -7,6 +7,8 @@ import tempfile
 import shutil
 import math
 import time
+import json
+import html
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -14,7 +16,7 @@ from typing import List, Tuple
 from huggingface_hub import snapshot_download
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QFont, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -28,7 +30,16 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QProgressBar,
     QListWidget,
+    QListWidgetItem,
     QCheckBox,
+    QLineEdit,
+    QSlider,
+    QTabWidget,
+    QScrollArea,
+    QGroupBox,
+    QRadioButton,
+    QSplitter,
+    QFrame,
 )
 
 # MLX Whisper
@@ -450,6 +461,15 @@ class TranscribeWorker:
                 write_srt(out_path, segments)
                 self.log(f"Saved subtitles: {out_path}")
 
+            # Send segments to UI for display
+            try:
+                self.log("__SEGMENTS__ " + json.dumps({
+                    "file": os.path.basename(in_path),
+                    "segments": segments,
+                }))
+            except Exception:
+                pass
+
             if cleanup_audio:
                 try:
                     os.remove(audio_path)
@@ -476,7 +496,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("WhisperMac – MLX Whisper Video Transcriber")
-        self.resize(980, 620)
+        self.resize(1100, 720)
 
         self.selected_files: List[str] = []
         self.output_dir: str = ""
@@ -485,102 +505,216 @@ class MainWindow(QMainWindow):
         self.worker_thread: threading.Thread | None = None
         self.worker: TranscribeWorker | None = None
 
+        # Apply a simple dark theme
+        self.setStyleSheet(
+            """
+            QWidget{background:#1e1e1e;color:#eaeaea;}
+            QTextEdit{background:#151515;border:1px solid #333;}
+            QLineEdit{background:#151515;border:1px solid #333;padding:6px;border-radius:6px;}
+            QPushButton{background:#2a2a2a;border:1px solid #444;padding:6px 10px;border-radius:6px;}
+            QPushButton:disabled{background:#333;color:#777;}
+            QProgressBar{background:#151515;border:1px solid #333;height:16px;border-radius:8px;}
+            QProgressBar::chunk{background:#3a86ff;border-radius:8px;}
+            QGroupBox{border:1px solid #333;margin-top:12px;border-radius:6px;}
+            QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;}
+            QListWidget{background:#151515;border:1px solid #333;}
+            QComboBox{background:#151515;border:1px solid #333;padding:4px;border-radius:6px;}
+            QScrollArea{border:none;}
+            """
+        )
+
         central = QWidget(self)
         self.setCentralWidget(central)
+        root_v = QVBoxLayout(central)
+        root_v.setContentsMargins(12, 12, 12, 12)
+        root_v.setSpacing(10)
 
-        root = QHBoxLayout(central)
-
-        # Left controls
-        left = QVBoxLayout()
-        root.addLayout(left, 0)
-
-        title = QLabel("Whisper Video Transcriber")
-        title.setStyleSheet("font-size:18px; font-weight:600;")
-        left.addWidget(title)
-
-        subtitle = QLabel("Apple MLX + Whisper on Mac")
-        subtitle.setStyleSheet("color: gray;")
-        left.addWidget(subtitle)
-
-        btn_pick = QPushButton("Choose Video/Audio Files…")
-        btn_pick.clicked.connect(self.choose_files)
-        left.addWidget(btn_pick)
-
-        self.files_list = QListWidget()
-        self.files_list.setMinimumWidth(320)
-        self.files_list.setMaximumHeight(160)
-        left.addWidget(self.files_list)
-
-        left.addWidget(QLabel("Model:"))
-        self.model_combo = QComboBox()
-        for name, _repo in MODELS:
-            self.model_combo.addItem(name)
-        self.model_combo.setCurrentIndex(2 if self.model_combo.count() > 2 else 0)
-        left.addWidget(self.model_combo)
-
-        left.addWidget(QLabel("Output format:"))
-        self.format_combo = QComboBox()
-        for fmt in OUTPUT_FORMATS:
-            self.format_combo.addItem(fmt)
-        self.format_combo.setCurrentIndex(0)
-        left.addWidget(self.format_combo)
-
-        # Options
-        self.chk_word_ts = QCheckBox("Word-level timestamps")
-        self.chk_word_ts.setChecked(True)
-        left.addWidget(self.chk_word_ts)
-
-        self.chk_stream = QCheckBox("Stream transcript during processing")
-        self.chk_stream.setChecked(True)
-        left.addWidget(self.chk_stream)
-
-        self.chk_diarize = QCheckBox("Speaker recognition (experimental)")
-        self.chk_diarize.setChecked(False)
-        left.addWidget(self.chk_diarize)
-
-        btn_outdir = QPushButton("Choose Output Folder…")
-        btn_outdir.clicked.connect(self.choose_output_dir)
-        left.addWidget(btn_outdir)
-
-        self.outdir_lbl = QLabel("(Default: alongside each input)")
-        self.outdir_lbl.setWordWrap(True)
-        left.addWidget(self.outdir_lbl)
-
-        self.btn_start = QPushButton("Start Transcription")
-        self.btn_start.setStyleSheet("background:#1f6aa5;color:white;padding:6px 10px;border-radius:6px;")
+        # Header bar (status, actions, search)
+        header = QWidget()
+        header.setFixedHeight(44)
+        header_l = QHBoxLayout(header)
+        header_l.setContentsMargins(6, 4, 6, 4)
+        header_l.setSpacing(8)
+        self.status_lbl = QLabel("Idle")
+        self.status_lbl.setStyleSheet("color:#a0c4ff;")
+        header_l.addWidget(self.status_lbl)
+        header_l.addStretch(1)
+        self.btn_pick = QPushButton("Choose Files…")
+        self.btn_pick.clicked.connect(self.choose_files)
+        header_l.addWidget(self.btn_pick)
+        self.btn_start = QPushButton("Start")
         self.btn_start.clicked.connect(self.start_transcription)
-        left.addWidget(self.btn_start)
-
-        self.btn_stop = QPushButton("Stop")
+        header_l.addWidget(self.btn_start)
+        self.btn_stop = QPushButton("Cancel")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.request_stop)
-        left.addWidget(self.btn_stop)
+        header_l.addWidget(self.btn_stop)
+        self.btn_copy = QPushButton("Copy")
+        self.btn_copy.clicked.connect(self.copy_transcript)
+        header_l.addWidget(self.btn_copy)
+        self.btn_export = QPushButton("Export…")
+        self.btn_export.clicked.connect(self.export_current)
+        header_l.addWidget(self.btn_export)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search in transcript…")
+        self.search_edit.returnPressed.connect(self.search_in_transcript)
+        self.search_edit.setFixedWidth(240)
+        header_l.addWidget(self.search_edit)
+        root_v.addWidget(header)
 
-        left.addStretch(1)
+        # Main splitter: left transcript/logs, right options
+        splitter = QSplitter(Qt.Horizontal)
 
-        # Right logs
-        right = QVBoxLayout()
-        root.addLayout(right, 1)
+        left_panel = QWidget()
+        left_v = QVBoxLayout(left_panel)
 
+        self.tabs = QTabWidget()
+        # Transcript tab
         self.transcript_text = QTextEdit()
         self.transcript_text.setReadOnly(True)
         self.transcript_text.setPlaceholderText("Live transcript will appear here…")
-        right.addWidget(self.transcript_text)
-
+        self.tabs.addTab(self.transcript_text, "Transcript")
+        # Logs tab
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        right.addWidget(self.log_text)
+        self.tabs.addTab(self.log_text, "Logs")
+        # Segments tab (list view)
+        self.segment_list = QListWidget()
+        self.segment_list.itemDoubleClicked.connect(self.toggle_favorite_for_item)
+        self.tabs.addTab(self.segment_list, "Segments")
+        left_v.addWidget(self.tabs)
 
         # Bottom progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        right.addWidget(self.progress)
+        left_v.addWidget(self.progress)
+
+        splitter.addWidget(left_panel)
+
+        # Right options panel (scrollable)
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setMinimumWidth(320)
+        options_root = QWidget()
+        options_v = QVBoxLayout(options_root)
+
+        # Display mode group (visual only for now)
+        gb_display = QGroupBox("Display Mode")
+        disp_l = QHBoxLayout(gb_display)
+        self.rb_mode_transcript = QRadioButton("Transcript")
+        self.rb_mode_segments = QRadioButton("Segments")
+        self.rb_mode_transcript.setChecked(True)
+        disp_l.addWidget(self.rb_mode_transcript)
+        disp_l.addWidget(self.rb_mode_segments)
+        options_v.addWidget(gb_display)
+        self.rb_mode_transcript.toggled.connect(self.on_display_mode_changed)
+        self.rb_mode_segments.toggled.connect(self.on_display_mode_changed)
+
+        # Speakers panel (dynamic: rename/hide)
+        gb_speakers = QGroupBox("Speakers")
+        spk_v = QVBoxLayout(gb_speakers)
+        self.speakers_info_lbl = QLabel("(Enable diarization and run to populate speakers)")
+        self.speakers_info_lbl.setWordWrap(True)
+        spk_v.addWidget(self.speakers_info_lbl)
+        self.speakers_container = QWidget()
+        self.speakers_container_v = QVBoxLayout(self.speakers_container)
+        self.speakers_container_v.setContentsMargins(0, 0, 0, 0)
+        self.speakers_container_v.setSpacing(6)
+        spk_v.addWidget(self.speakers_container)
+        options_v.addWidget(gb_speakers)
+
+        # Options group
+        gb_opts = QGroupBox("Options")
+        opts_v = QVBoxLayout(gb_opts)
+        font_row = QHBoxLayout()
+        font_row.addWidget(QLabel("Font Size"))
+        self.font_slider = QSlider(Qt.Horizontal)
+        self.font_slider.setRange(10, 28)
+        self.font_slider.setValue(14)
+        self.font_slider.valueChanged.connect(self.apply_font_size)
+        font_row.addWidget(self.font_slider)
+        opts_v.addLayout(font_row)
+        self.chk_show_timestamps = QCheckBox("Show timestamps")
+        opts_v.addWidget(self.chk_show_timestamps)
+        self.chk_show_timestamps.toggled.connect(self.refresh_views)
+        self.chk_favorited = QCheckBox("Show favorited only")
+        opts_v.addWidget(self.chk_favorited)
+        self.chk_favorited.toggled.connect(self.refresh_views)
+        self.chk_group_no_spk = QCheckBox("Group Segments Without Speakers")
+        opts_v.addWidget(self.chk_group_no_spk)
+        self.chk_group_no_spk.toggled.connect(self.refresh_views)
+        options_v.addWidget(gb_opts)
+
+        # Input & Model group (moved from old left panel)
+        gb_input = QGroupBox("Input & Model")
+        in_v = QVBoxLayout(gb_input)
+        # Files list
+        self.files_list = QListWidget()
+        self.files_list.setMinimumHeight(80)
+        in_v.addWidget(self.files_list)
+        # Model
+        in_v.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        for name, _repo in MODELS:
+            self.model_combo.addItem(name)
+        self.model_combo.setCurrentIndex(2 if self.model_combo.count() > 2 else 0)
+        in_v.addWidget(self.model_combo)
+        # Output format
+        in_v.addWidget(QLabel("Output format:"))
+        self.format_combo = QComboBox()
+        for fmt in OUTPUT_FORMATS:
+            self.format_combo.addItem(fmt)
+        self.format_combo.setCurrentIndex(0)
+        in_v.addWidget(self.format_combo)
+        # Processing toggles
+        self.chk_word_ts = QCheckBox("Word-level timestamps")
+        self.chk_word_ts.setChecked(True)
+        in_v.addWidget(self.chk_word_ts)
+        self.chk_stream = QCheckBox("Stream transcript during processing")
+        self.chk_stream.setChecked(True)
+        in_v.addWidget(self.chk_stream)
+        self.chk_diarize = QCheckBox("Speaker recognition (experimental)")
+        self.chk_diarize.setChecked(False)
+        in_v.addWidget(self.chk_diarize)
+        # Output directory
+        outdir_row = QHBoxLayout()
+        btn_outdir = QPushButton("Choose Output Folder…")
+        btn_outdir.clicked.connect(self.choose_output_dir)
+        outdir_row.addWidget(btn_outdir)
+        in_v.addLayout(outdir_row)
+        self.outdir_lbl = QLabel("(Default: alongside each input)")
+        self.outdir_lbl.setWordWrap(True)
+        in_v.addWidget(self.outdir_lbl)
+        options_v.addWidget(gb_input)
+
+        options_v.addStretch(1)
+        options_scroll.setWidget(options_root)
+        splitter.addWidget(options_scroll)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([820, 340])
+        root_v.addWidget(splitter)
 
         # Timer to poll logs
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_log_queue)
         self.timer.start(100)
+
+        # Runtime state
+        self.current_segments: list[dict] = []
+        self.favorited_ids: set[int] = set()
+        self.visible_row_to_seg_index: list[int] = []
+        # Speaker state
+        self.speaker_names: dict[str, str] = {}
+        self.speaker_colors: dict[str, str] = {}
+        self.hidden_speakers: set[str] = set()
+        self.speaker_widgets: dict[str, dict] = {}
+        self._speaker_palette = [
+            "#e76f51", "#2a9d8f", "#e9c46a", "#f4a261", "#a8dadc",
+            "#457b9d", "#8ecae6", "#ffb703", "#fb8500", "#bdb2ff",
+        ]
 
     def closeEvent(self, event):
         try:
@@ -606,6 +740,7 @@ class MainWindow(QMainWindow):
                     num, den = frac.strip().split("/")
                     val = int(int(num) * 100 / max(1, int(den)))
                     updated_progress = val
+                    self.status_lbl.setText(f"Transcribing… ({num}/{den})")
                 except Exception:
                     pass
             elif msg.startswith("__TRANSCRIPT__"):
@@ -617,6 +752,21 @@ class MainWindow(QMainWindow):
                 self.transcript_text.moveCursor(QTextCursor.End)
                 self.transcript_text.insertPlainText(content.strip() + " ")
                 self.transcript_text.moveCursor(QTextCursor.End)
+            elif msg.startswith("__SEGMENTS__"):
+                # Receive structured segments
+                try:
+                    _, payload = msg.split(" ", 1)
+                    data = json.loads(payload)
+                    segs = data.get("segments", []) or []
+                except Exception:
+                    segs = []
+                self.current_segments = segs
+                self.render_segments_list()
+                # Optionally rebuild transcript to include timestamps
+                if self.chk_show_timestamps.isChecked():
+                    self.render_transcript_view()
+                # Build/refresh speakers panel if diarization labels exist
+                self.rebuild_speakers_panel()
             else:
                 self.log(msg)
         if updated_progress is not None:
@@ -624,6 +774,236 @@ class MainWindow(QMainWindow):
         # Reset buttons when thread ends
         if self.worker_thread and not self.worker_thread.is_alive():
             self.set_running(False)
+
+    def copy_transcript(self):
+        if self.rb_mode_segments.isChecked() or self.tabs.currentIndex() == 2:
+            # Copy selected segments text
+            items = self.segment_list.selectedItems()
+            if not items:
+                return
+            lines = []
+            for it in items:
+                lines.append(it.data(Qt.DisplayRole))
+            QApplication.clipboard().setText("\n".join(lines))
+        else:
+            text = self.transcript_text.toPlainText().strip()
+            if text:
+                QApplication.clipboard().setText(text)
+
+    def export_current(self):
+        # Export the current transcript text to a file of chosen type
+        text = self.transcript_text.toPlainText()
+        if not text.strip():
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export Transcript", "transcript.txt", "Text (*.txt)")
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.log(f"Exported transcript: {path}")
+            except Exception as e:
+                self.log(f"Export failed: {e}")
+
+    def search_in_transcript(self):
+        query = self.search_edit.text().strip()
+        if not query:
+            return
+        # Find next occurrence
+        if not self.transcript_text.find(query):
+            # Wrap to start
+            cursor = self.transcript_text.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            self.transcript_text.setTextCursor(cursor)
+            self.transcript_text.find(query)
+
+    def apply_font_size(self):
+        size = int(self.font_slider.value())
+        font = QFont(self.transcript_text.font())
+        font.setPointSize(size)
+        self.transcript_text.setFont(font)
+        self.segment_list.setFont(font)
+
+    def on_display_mode_changed(self):
+        if self.rb_mode_segments.isChecked():
+            self.tabs.setCurrentIndex(2)
+        else:
+            self.tabs.setCurrentIndex(0)
+
+    def refresh_views(self):
+        self.render_segments_list()
+        if self.chk_show_timestamps.isChecked():
+            self.render_transcript_view()
+
+    def format_s(self, s: dict, with_ts: bool) -> str:
+        txt = (s.get("text") or "").strip()
+        raw_spk = s.get("speaker")
+        spk = self.display_name_for(raw_spk)
+        if with_ts:
+            start = format_srt_time(float(s.get("start", 0.0)))
+            end = format_srt_time(float(s.get("end", s.get("start", 0.0))))
+            ts = f"[{start} → {end}]"
+        else:
+            ts = ""
+        if spk:
+            base = f"{spk}: {txt}"
+        else:
+            base = txt
+        return (ts + " " + base).strip()
+
+    def display_name_for(self, spk: str | None) -> str | None:
+        if not spk:
+            return None
+        return self.speaker_names.get(spk, spk)
+
+    def color_for(self, spk: str | None) -> str | None:
+        if not spk:
+            return None
+        if spk not in self.speaker_colors:
+            idx = len(self.speaker_colors) % max(1, len(self._speaker_palette))
+            self.speaker_colors[spk] = self._speaker_palette[idx]
+        return self.speaker_colors.get(spk)
+
+    def clear_layout(self, layout: QVBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+            else:
+                sub = item.layout()
+                if sub is not None:
+                    self.clear_layout(sub)  # type: ignore[arg-type]
+
+    def rebuild_speakers_panel(self):
+        # Collect speakers from current segments
+        speakers = []
+        seen = set()
+        for s in self.current_segments or []:
+            spk = s.get("speaker")
+            if spk and spk not in seen:
+                seen.add(spk)
+                speakers.append(spk)
+        speakers.sort()
+        # Update info label
+        if not speakers:
+            self.speakers_info_lbl.setText("(Enable diarization and run to populate speakers)")
+        else:
+            self.speakers_info_lbl.setText("Click the checkbox to show/hide a speaker. Edit the name to rename.")
+        # Ensure names/colors exist
+        for spk in speakers:
+            self.speaker_names.setdefault(spk, spk)
+            self.color_for(spk)
+        # Rebuild widgets
+        self.clear_layout(self.speakers_container_v)
+        self.speaker_widgets.clear()
+        for spk in speakers:
+            row = QWidget()
+            row_l = QHBoxLayout(row)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(6)
+            color_lbl = QLabel()
+            color_lbl.setFixedSize(14, 14)
+            color_lbl.setStyleSheet(f"background:{self.speaker_colors.get(spk, '#888')}; border-radius:3px;")
+            row_l.addWidget(color_lbl)
+            cb = QCheckBox()
+            cb.setChecked(spk not in self.hidden_speakers)
+            cb.toggled.connect(lambda checked, spk=spk: self.on_speaker_vis_changed(spk, checked))
+            row_l.addWidget(cb)
+            name_edit = QLineEdit(self.speaker_names.get(spk, spk))
+            name_edit.setPlaceholderText(spk)
+            name_edit.textEdited.connect(lambda text, spk=spk: self.on_speaker_name_changed(spk, text))
+            row_l.addWidget(name_edit, 1)
+            code_lbl = QLabel(spk)
+            code_lbl.setStyleSheet("color:#999;")
+            row_l.addWidget(code_lbl)
+            self.speakers_container_v.addWidget(row)
+            self.speaker_widgets[spk] = {"checkbox": cb, "name_edit": name_edit, "color": color_lbl}
+        # Spacer to push up
+        self.speakers_container_v.addStretch(1)
+
+    def on_speaker_vis_changed(self, spk: str, visible: bool):
+        if not visible:
+            self.hidden_speakers.add(spk)
+        else:
+            self.hidden_speakers.discard(spk)
+        self.refresh_views()
+
+    def on_speaker_name_changed(self, spk: str, name: str):
+        self.speaker_names[spk] = (name.strip() or spk)
+        self.refresh_views()
+
+    def build_grouped_segments(self) -> list[dict]:
+        segs = list(self.current_segments or [])
+        if not self.chk_group_no_spk.isChecked() or not segs:
+            return segs
+        out: list[dict] = []
+        buf: dict | None = None
+        for s in segs:
+            if not s.get("speaker"):
+                if buf is None:
+                    buf = {"start": s.get("start", 0.0), "end": s.get("end", s.get("start", 0.0)), "text": s.get("text", ""), "speaker": None}
+                else:
+                    buf["end"] = float(s.get("end", buf["end"]))
+                    buf["text"] = (buf.get("text", "") + " " + (s.get("text") or "")).strip()
+            else:
+                if buf is not None:
+                    out.append(buf)
+                    buf = None
+                out.append(s)
+        if buf is not None:
+            out.append(buf)
+        return out
+
+    def render_segments_list(self):
+        self.segment_list.clear()
+        self.visible_row_to_seg_index = []
+        if not self.current_segments:
+            return
+        segs = self.build_grouped_segments()
+        with_ts = self.chk_show_timestamps.isChecked()
+        # Build items; keep mapping index for favorites
+        for idx, s in enumerate(segs):
+            spk = s.get("speaker")
+            if spk and spk in self.hidden_speakers:
+                continue
+            text = self.format_s(s, with_ts)
+            if idx in self.favorited_ids:
+                text = "★ " + text
+            item = QListWidgetItem(text)
+            if spk and spk in self.speaker_colors:
+                item.setForeground(QColor(self.speaker_colors[spk]))
+            self.segment_list.addItem(item)
+            self.visible_row_to_seg_index.append(idx)
+
+    def render_transcript_view(self):
+        if not self.current_segments:
+            return
+        with_ts = self.chk_show_timestamps.isChecked()
+        parts_html: list[str] = []
+        for s in self.build_grouped_segments():
+            spk = s.get("speaker")
+            if spk and spk in self.hidden_speakers:
+                continue
+            text = self.format_s(s, with_ts)
+            color = self.speaker_colors.get(spk)
+            safe = html.escape(text)
+            if color:
+                parts_html.append(f'<span style="color:{color}">{safe}</span>')
+            else:
+                parts_html.append(safe)
+        self.transcript_text.setHtml("<br/>".join(parts_html))
+
+    def toggle_favorite_for_item(self, item):
+        row = self.segment_list.row(item)
+        if 0 <= row < len(self.visible_row_to_seg_index):
+            seg_idx = self.visible_row_to_seg_index[row]
+        else:
+            seg_idx = row
+        if seg_idx in self.favorited_ids:
+            self.favorited_ids.remove(seg_idx)
+        else:
+            self.favorited_ids.add(seg_idx)
+        self.render_segments_list()
 
     def choose_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -657,6 +1037,10 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if running:
+            self.status_lbl.setText("Transcribing…")
+        else:
+            self.status_lbl.setText("Idle")
 
     def start_transcription(self):
         if not self.selected_files:

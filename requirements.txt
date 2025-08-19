@@ -5,6 +5,7 @@ huggingface_hub>=0.23
 tqdm>=4.66
 
 # Optional (for speaker recognition / diarization):
-# Resemblyzer
-# spectralcluster
-# librosa
+resemblyzer
+spectralcluster
+librosa
+numpy
